@@ -1,6 +1,7 @@
 import os
 import shutil
 import logging
+import traceback
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
 
 try:
@@ -22,77 +23,119 @@ router = APIRouter(tags=["documents"])
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UPLOAD_DIR = os.path.join(BACKEND_DIR, "uploads")
 
+
 @router.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     """
-    Upload a single PDF file. The file is saved, text extracted, chunked,
-    embeddings created with sentence-transformers/all-MiniLM-L6-v2,
-    indexed into Pinecone vector storage, and the number of chunks indexed is returned.
+    Upload a single PDF file.
+    Pipeline:
+      1. Upload request received
+      2. PDF saved to disk
+      3. Text extracted
+      4. Chunks created
+      5. Embeddings generated
+      6. Vector database insertion completed
     """
-    filename = file.filename or ""
-    logger.info(f"Received request to /upload file: '{filename}'")
+    filename = file.filename or "uploaded_document.pdf"
+    logger.info("======================================================================")
+    logger.info(f"[LOG 1: REQUEST RECEIVED] POST /upload file: '{filename}'")
 
-    if not filename.lower().endswith(".pdf"):
-        logger.error(f"Rejected upload — '{filename}' is not a PDF file.")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file format for '{filename}'. Only PDF files (.pdf) are supported."
-        )
-    
-    # Ensure upload directory exists
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    
-    # Define file path
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    
-    # Save the file to disk
     try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        file_size = os.path.getsize(file_path)
-        logger.info(f"Saved file '{filename}' ({file_size} bytes) to '{file_path}'")
-    except Exception as e:
-        logger.error(f"Failed saving file '{filename}': {e}")
+        if not filename.lower().endswith(".pdf"):
+            logger.error(f"[LOG 1 REJECTED] File '{filename}' is not a PDF file.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid file format for '{filename}'. Only PDF files (.pdf) are supported."
+            )
+
+        # ─── Step 1: Save PDF to Disk ──────────────────────────────────────────
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        file_path = os.path.join(UPLOAD_DIR, filename)
+
+        try:
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            file_size = os.path.getsize(file_path)
+            logger.info(f"[LOG 2: PDF SAVED] Saved '{filename}' ({file_size} bytes) to '{file_path}'")
+        except Exception as e:
+            err_msg = f"Could not save file '{filename}' to server storage: {e}"
+            logger.error(f"[LOG 2 ERROR] {err_msg}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=err_msg
+            )
+        finally:
+            await file.close()
+
+        # ─── Step 2, 3, 4: Text Extraction, Chunking, Embedding Generation ─────
+        try:
+            logger.info(f"[LOG 3: EXTRACT, CHUNK & EMBED] Starting PDF processing pipeline for '{filename}'...")
+            processing_result = pdf_service.process_pdf(file_path)
+            chunks = processing_result["chunks"]
+            num_chunks = len(chunks)
+            extracted_text = processing_result["extracted_text"]
+            logger.info(
+                f"[LOG 3 SUCCESS] Processed '{filename}': Text Extracted ({len(extracted_text)} chars) │ "
+                f"Chunks Created ({num_chunks} chunks) │ Embeddings Generated successfully."
+            )
+        except Exception as proc_err:
+            err_msg = f"Failed extracting text, chunking, or generating embeddings for '{filename}': {proc_err}"
+            logger.error(f"[LOG 3 ERROR] {err_msg}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            print(f"[CRITICAL ERROR] {err_msg}\n{traceback.format_exc()}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=err_msg
+            )
+
+        # ─── Step 5: Vector Database Insertion ─────────────────────────────────
+        try:
+            logger.info(f"[LOG 4: VECTOR DB INSERTION] Inserting {num_chunks} chunks into Pinecone vector DB...")
+            pinecone_service.upsert_document_chunks(filename, chunks, clear_existing=True)
+            logger.info(f"[LOG 5: VECTOR DB INSERTION COMPLETED] Finished vector indexing for '{filename}'.")
+        except Exception as db_err:
+            err_msg = f"Vector database insertion failed for '{filename}': {db_err}"
+            logger.error(f"[LOG 4/5 ERROR] {err_msg}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            print(f"[CRITICAL ERROR] {err_msg}\n{traceback.format_exc()}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=err_msg
+            )
+
+        logger.info(f"[UPLOAD PIPELINE COMPLETE] Document '{filename}' successfully ingested and indexed.")
+        logger.info("======================================================================")
+
+        return {
+            "filename": filename,
+            "message": f"File '{filename}' uploaded and indexed successfully into vector database.",
+            "extracted_text": extracted_text,
+            "chunks": chunks,
+            "chunks_indexed": num_chunks,
+            "num_chunks_indexed": num_chunks
+        }
+
+    except HTTPException:
+        raise
+    except Exception as uncaught_err:
+        tb_str = traceback.format_exc()
+        logger.error("======================================================================")
+        logger.error(f"[UNHANDLED UPLOAD ERROR] File: '{filename}'")
+        logger.error(f"Exception: {uncaught_err}")
+        logger.error(f"Complete Traceback:\n{tb_str}")
+        logger.error("======================================================================")
+        print(f"[CRITICAL UNHANDLED ERROR] {uncaught_err}\n{tb_str}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not save file '{filename}' to server storage: {str(e)}"
+            detail=f"Upload processing failed: {str(uncaught_err)}"
         )
-    finally:
-        await file.close()
-        
-    # Process PDF: Extract text, chunk it, and generate embeddings
-    try:
-        logger.info(f"Starting PDF processing for '{filename}'...")
-        processing_result = pdf_service.process_pdf(file_path)
-        chunks = processing_result["chunks"]
-        num_chunks = len(chunks)
-        logger.info(f"PDF processing completed for '{filename}': Extracted {len(processing_result['extracted_text'])} chars into {num_chunks} chunks.")
-        
-        # Store embeddings in Pinecone index (clear old vectors first)
-        logger.info(f"Upserting {num_chunks} chunks to Pinecone vector DB...")
-        pinecone_service.upsert_document_chunks(filename, chunks, clear_existing=True)
-        logger.info(f"Successfully finished ingestion for '{filename}'.")
-    except Exception as e:
-        logger.error(f"Error processing or indexing PDF '{filename}': {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process or index PDF file '{filename}': {str(e)}"
-        )
-        
-    return {
-        "filename": filename,
-        "message": f"File '{filename}' uploaded and indexed successfully into vector database.",
-        "extracted_text": processing_result["extracted_text"],
-        "chunks": chunks,
-        "chunks_indexed": num_chunks,
-        "num_chunks_indexed": num_chunks
-    }
+
 
 @router.post("/upload-multiple")
 async def upload_multiple_pdfs(files: list[UploadFile] = File(...)):
     """
-    Upload multiple PDF files simultaneously. Each file is validated, saved, processed,
-    and indexed into the shared Pinecone vector database.
+    Upload multiple PDF files simultaneously.
     """
     logger.info(f"Received request to /upload-multiple with {len(files) if files else 0} file(s).")
     if not files:
@@ -100,12 +143,12 @@ async def upload_multiple_pdfs(files: list[UploadFile] = File(...)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files uploaded. Please select at least one valid PDF document."
         )
-        
+
     successful_uploads = []
     failed_uploads = []
-    
+
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    
+
     for idx, file in enumerate(files):
         filename = file.filename or "unnamed.pdf"
         logger.info(f"Processing batch item: '{filename}'")
@@ -116,9 +159,9 @@ async def upload_multiple_pdfs(files: list[UploadFile] = File(...)):
                 "error": "Only PDF files (.pdf) are supported."
             })
             continue
-            
+
         file_path = os.path.join(UPLOAD_DIR, filename)
-        
+
         try:
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
@@ -130,12 +173,12 @@ async def upload_multiple_pdfs(files: list[UploadFile] = File(...)):
             continue
         finally:
             await file.close()
-            
+
         try:
             processing_result = pdf_service.process_pdf(file_path)
             chunks = processing_result["chunks"]
             pinecone_service.upsert_document_chunks(filename, chunks, clear_existing=(idx == 0))
-            
+
             successful_uploads.append({
                 "filename": filename,
                 "chunks_indexed": len(chunks),
@@ -144,6 +187,7 @@ async def upload_multiple_pdfs(files: list[UploadFile] = File(...)):
             logger.info(f"Batch item '{filename}' successfully processed and indexed ({len(chunks)} chunks).")
         except Exception as e:
             logger.error(f"Batch item '{filename}' failed: {e}")
+            logger.error(traceback.format_exc())
             failed_uploads.append({
                 "filename": filename,
                 "error": f"Failed to extract text or index vector embeddings: {str(e)}"
@@ -167,20 +211,18 @@ async def upload_multiple_pdfs(files: list[UploadFile] = File(...)):
 async def delete_document(filename: str):
     """
     Delete a single document by filename.
-    Removes the file from disk and purges all associated Pinecone vectors so
-    the document never appears in future search results.
     """
     logger.info(f"Received DELETE request for document: '{filename}'")
 
     file_path = os.path.join(UPLOAD_DIR, filename)
 
-    # 1. Delete file from disk
     if os.path.exists(file_path):
         try:
             os.remove(file_path)
             logger.info(f"Deleted file from disk: '{file_path}'")
         except Exception as e:
             logger.error(f"Failed to delete file '{filename}' from disk: {e}")
+            logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Could not delete file '{filename}' from disk: {str(e)}"
@@ -188,12 +230,12 @@ async def delete_document(filename: str):
     else:
         logger.warning(f"File '{filename}' not found on disk — skipping disk deletion.")
 
-    # 2. Delete all Pinecone vectors for this document
     try:
         pinecone_service.delete_vectors_by_filename(filename)
         logger.info(f"Purged Pinecone vectors for '{filename}'.")
     except Exception as e:
         logger.error(f"Failed to delete Pinecone vectors for '{filename}': {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"File deleted from disk but failed to purge Pinecone vectors: {str(e)}"
