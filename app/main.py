@@ -20,11 +20,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Configure CORS — allow local dev and the deployed Vercel frontend
+# Configure CORS — allow Vercel frontend domains (production & preview) and local dev
 origins = [
-    # Production
     "https://context-flow-ai-frontend.vercel.app",
-    # Local development
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
@@ -38,10 +36,10 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",  # All local ports
+    allow_origin_regex=r"https://.*\.vercel\.app|http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE", "PATCH"],
+    allow_headers=["*"],
 )
 
 # Ensure uploads directory exists and serve PDFs statically
