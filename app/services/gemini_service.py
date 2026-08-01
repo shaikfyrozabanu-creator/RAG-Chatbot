@@ -1,6 +1,5 @@
 import os
 import logging
-from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,21 +12,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("groq_service")
 
-client = None
-groq_key = os.environ.get("GROQ_API_KEY")
-if groq_key:
-    try:
-        client = Groq(api_key=groq_key)
-        logger.info("Groq client initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Groq client: {e}")
-else:
-    logger.warning("GROQ_API_KEY environment variable is missing.")
+_client = None
+
+def _get_groq_client():
+    """Lazy initializer for Groq client."""
+    global _client
+    if _client is None:
+        groq_key = os.environ.get("GROQ_API_KEY")
+        if groq_key:
+            try:
+                from groq import Groq
+                _client = Groq(api_key=groq_key)
+                logger.info("Groq client initialized successfully.")
+            except Exception as e:
+                logger.error(f"Failed to initialize Groq client: {e}")
+        else:
+            logger.warning("GROQ_API_KEY environment variable is missing.")
+    return _client
 
 def generate_rag_answer(question: str, context: str, history: list[dict] = None, memories: list[dict] = None) -> str:
     """Uses Groq (llama-3.3-70b-versatile) to answer question using context, memories, and conversation history."""
     logger.info(f"[STEP 5] Preparing RAG prompt for Groq with retrieved context & memory nodes...")
     
+    client = _get_groq_client()
     if not client:
         logger.error("[STEP 5] FAILED — Groq client is not initialized.")
         raise ValueError("GROQ_API_KEY environment variable is not configured or client initialization failed.")

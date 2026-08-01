@@ -4,26 +4,32 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-supabase_url = os.environ.get("SUPABASE_URL")
-supabase_key = os.environ.get("SUPABASE_KEY")
+_supabase_client = None
 
-supabase_client = None
-if supabase_url and supabase_key:
-    try:
-        from supabase import create_client
-        supabase_client = create_client(supabase_url, supabase_key)
-        print("Supabase client initialized successfully.")
-    except Exception as e:
-        print(f"Failed to initialize Supabase client: {e}")
+def _get_supabase_client():
+    """Lazy initializer for Supabase client."""
+    global _supabase_client
+    if _supabase_client is None:
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        if supabase_url and supabase_key:
+            try:
+                from supabase import create_client
+                _supabase_client = create_client(supabase_url, supabase_key)
+                print("Supabase client initialized successfully.")
+            except Exception as e:
+                print(f"Failed to initialize Supabase client: {e}")
+    return _supabase_client
 
 # In-memory history fallback
 in_memory_history = {} # session_id -> list of messages
 
 def store_message(session_id: str, role: str, content: str):
     """Store message to Supabase database (or fallback in-memory store)."""
-    if supabase_client:
+    client = _get_supabase_client()
+    if client:
         try:
-            supabase_client.table("chat_history").insert({
+            client.table("chat_history").insert({
                 "session_id": session_id,
                 "role": role,
                 "content": content
@@ -44,9 +50,10 @@ def store_message(session_id: str, role: str, content: str):
 
 def get_chat_history(session_id: str) -> list[dict]:
     """Retrieve all messages for a specific session ID."""
-    if supabase_client:
+    client = _get_supabase_client()
+    if client:
         try:
-            response = supabase_client.table("chat_history") \
+            response = client.table("chat_history") \
                 .select("*") \
                 .eq("session_id", session_id) \
                 .order("created_at", desc=False) \

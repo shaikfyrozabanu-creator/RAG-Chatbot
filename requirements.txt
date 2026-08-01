@@ -3,8 +3,7 @@ uvicorn
 python-multipart
 python-dotenv
 PyPDF2
-langchain
-langchain-text-splitters
 sentence-transformers
 pinecone
 groq
+supabase

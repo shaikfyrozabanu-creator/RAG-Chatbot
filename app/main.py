@@ -62,3 +62,8 @@ async def health_check():
     Health check endpoint to monitor application status.
     """
     return {"status": "healthy", "pinecone": "connected", "version": "1.2.0"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app.main:app" if os.path.exists("app") else "main:app", host="0.0.0.0", port=port)

@@ -1,6 +1,5 @@
 import os
 import logging
-from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,26 +12,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pinecone_service")
 
-api_key = os.environ.get("PINECONE_API_KEY")
 index_name = os.environ.get("PINECONE_INDEX_NAME", "contextual-chatbot")
 
-logger.info(f"Pinecone index name from env: '{index_name}'")
+_pc = None
 
-pc = None
-if api_key:
-    try:
-        pc = Pinecone(api_key=api_key)
-        logger.info("Pinecone client initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Pinecone client: {e}")
-else:
-    logger.warning("PINECONE_API_KEY is not set — Pinecone is disabled.")
+def _get_pinecone_client():
+    """Lazy initializer for Pinecone client to avoid startup network/memory overhead."""
+    global _pc
+    if _pc is None:
+        api_key = os.environ.get("PINECONE_API_KEY")
+        if api_key:
+            try:
+                from pinecone import Pinecone
+                _pc = Pinecone(api_key=api_key)
+                logger.info("Pinecone client initialized successfully.")
+            except Exception as e:
+                logger.error(f"Failed to initialize Pinecone client: {e}")
+        else:
+            logger.warning("PINECONE_API_KEY is not set — Pinecone is disabled.")
+    return _pc
 
 def get_index():
+    pc = _get_pinecone_client()
     if not pc:
         raise ValueError("PINECONE_API_KEY environment variable is not configured or client initialization failed.")
 
     try:
+        from pinecone import ServerlessSpec
         existing_indexes = [idx.name for idx in pc.list_indexes()]
         logger.info(f"[PINECONE] Existing indexes: {existing_indexes}")
 
@@ -58,7 +64,7 @@ def get_index():
 
 def delete_all_vectors():
     """Deletes all existing vectors from Pinecone index so only the latest document is searchable."""
-    if not pc:
+    if not _get_pinecone_client():
         logger.warning("[PINECONE] SKIPPED delete_all_vectors — Pinecone is not configured.")
         return
     try:
@@ -71,7 +77,7 @@ def delete_all_vectors():
 
 def delete_vectors_by_filename(filename: str):
     """Deletes all Pinecone vectors belonging to a specific document filename."""
-    if not pc:
+    if not _get_pinecone_client():
         logger.warning("[PINECONE] SKIPPED delete_vectors_by_filename — Pinecone is not configured.")
         return
     try:
@@ -90,7 +96,7 @@ def upsert_document_chunks(filename: str, chunks: list[dict], clear_existing: bo
     """
     logger.info(f"[STEP 4] Upserting {len(chunks)} chunks for '{filename}' into Pinecone...")
 
-    if not pc:
+    if not _get_pinecone_client():
         logger.warning("[STEP 4] SKIPPED — Pinecone is not configured (missing API key).")
         return
 
@@ -148,7 +154,7 @@ def query_similar_chunks(query_vector: list[float], filename: str = None, top_k:
     """Queries Pinecone for top 5 most similar chunks belonging to the current document."""
     logger.info(f"[STEP 5] Querying Pinecone for top {top_k} similar chunks (file='{filename or 'all'}')...")
 
-    if not pc:
+    if not _get_pinecone_client():
         logger.warning("[STEP 5] SKIPPED — Pinecone is not configured (missing API key). Returning [].")
         return []
 
