@@ -17,9 +17,11 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Configure CORS so the React frontend can connect from localhost
-# Covers all common localhost variants: IPv4, IPv6, and multiple Vite/CRA ports
+# Configure CORS — allow local dev and the deployed Vercel frontend
 origins = [
+    # Production
+    "https://context-flow-ai-frontend.vercel.app",
+    # Local development
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
