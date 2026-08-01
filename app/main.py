@@ -1,20 +1,51 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
-import os, pathlib
+import os, pathlib, threading, logging
+
+load_dotenv()
+
+logger = logging.getLogger("main")
 
 try:
     from backend.app.routers import documents, chat
 except ImportError:
     from app.routers import documents, chat
 
-load_dotenv()
+
+def _prewarm_model():
+    """Download and cache the embedding model in a background thread at startup.
+    This prevents Render's 30-second per-request timeout from killing the first
+    PDF upload while the model is downloading from HuggingFace (~80 MB).
+    """
+    try:
+        logger.info("[startup] Pre-warming embedding model in background thread...")
+        try:
+            from backend.app.services.pdf_service import _get_model
+        except ImportError:
+            from app.services.pdf_service import _get_model
+        _get_model()
+        logger.info("[startup] Embedding model ready.")
+    except Exception as exc:
+        logger.warning(f"[startup] Model pre-warm failed (will load on first request): {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start model pre-warm without blocking the server port bind
+    t = threading.Thread(target=_prewarm_model, daemon=True)
+    t.start()
+    yield  # server is running
+    # shutdown — nothing to clean up
+
 
 app = FastAPI(
     title="AI-Powered Contextual Chatbot API",
     description="Backend API for managing contextual website chatbot, document ingestion, and conversation memories.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS — allow local dev and the deployed Vercel frontend
@@ -53,16 +84,12 @@ app.include_router(chat.router)
 
 @app.get("/")
 async def root():
-    """
-    Root endpoint to confirm the backend is up and running.
-    """
+    """Root endpoint to confirm the backend is up and running."""
     return {"message": "Backend is running"}
 
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint to monitor application status.
-    """
+    """Health check endpoint to monitor application status."""
     return {"status": "healthy", "pinecone": "connected", "version": "1.2.0"}
 
 if __name__ == "__main__":
